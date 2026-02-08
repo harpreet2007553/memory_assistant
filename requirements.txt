@@ -1,0 +1,9 @@
+PyMuPDF              # for import fitz
+langchain            # for langchain_core, langchain.chat_models, langchain_text_splitters, langchain_community
+transformers         # for CLIPProcessor, CLIPModel
+Pillow               # for PIL.Image
+torch                # for PyTorch
+numpy                # for np
+scikit-learn         # for sklearn.metrics.pairwise
+python-dotenv        # for load_dotenv
+requests             # for HTTP requests
