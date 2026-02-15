@@ -1,32 +1,24 @@
+from flask import Flask, render_template, jsonify, request
 from langchain_core.documents import Document
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 import torch
-import numpy as np
-from langchain.chat_models import init_chat_model
-from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage
-from sklearn.metrics.pairwise import cosine_similarity
 import os
 import base64
 import io
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from relate import relate
-# from langchain_community.vectorstores import FAISS
-
 import os
 from dotenv import load_dotenv
-import requests
 import random
 import datetime
-from config import TEST_IMG1, TEST_IMG2
 import chromadb
-from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
-load_dotenv()
 import uuid
+from langchain_core.runnables import RunnableLambda
+from prompt import prompt_template
+from google import genai
 
-run_id = str(uuid.uuid4())[:8]
+app = Flask(__name__)
 
+load_dotenv()
 ## set up the environment
 os.environ["OPENAI_API_KEY"]=os.getenv("OPENAI_API_KEY")
 
@@ -98,72 +90,150 @@ def embed_text(text):
         return features.squeeze().numpy()
     
 
-url = "https://example.com/api/get-images"
-response = requests.get(url)
-# data = response.json()   # Suppose API returns {"images": ["...base64...", "...base64..."]}
-data = {
-    "images" : [TEST_IMG1, TEST_IMG2],
-    "text": "Shubh narang have a blue color lamborghini car",
-    "user_id" : "123"
-}
-image_data_store = {}
-all_embeddings = []
-all_docs = []
 
 
-for img_index, img in enumerate(data["images"], start=1):
-    try:
-        img_bytes = base64.b64decode(img)
-        pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            
-            # Create unique identifier
-        image_id = f"img_{img_index}_{random.randint(1,10000000000)}"
-            
-            # Store image as base64 for later use with GPT-4V
-        image_data_store[image_id] = img
-            
-            # Embed image using CLIP
-        embedding = embed_image(pil_image)
-        # print(embedding)
-        all_embeddings.append(embedding)
+@app.route("/store-memory", methods=["POST"])
+def storing_memory():
+    images = request.form.getlist("images")
+    text = request.form.get("text", "Nil")
+    user_id = request.form.get("user_id")
 
-            # Create document for image
-        image_doc = Document(
-            page_content=f"Bytes : {img}",
-            metadata={"date": f'{datetime.datetime.now()}', "type": "image", "image_id": image_id, "user_id" : data['user_id']}
+    data = {
+    "images": images, "text": text, "user_id": user_id
+    }
+    run_id = str(uuid.uuid4())[:8]
+    image_data_store = {}
+    all_embeddings = []
+    all_docs = []
+
+    for img_index, img in enumerate(data["images"], start=1):
+        try:
+            img_bytes = base64.b64decode(img)
+            pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+            image_id = f"img_{img_index}_{random.randint(1,10000000000)}"
+            image_data_store[image_id] = img
+
+            embedding = embed_image(pil_image)
+            all_embeddings.append(embedding)
+
+            image_doc = Document(
+                page_content=f"Bytes : {img}",
+                metadata={
+                    "date": str(datetime.datetime.now()),
+                    "type": "image",
+                    "id": image_id,
+                    "user_id": data["user_id"]
+                }
             )
-        all_docs.append(image_doc)
+            all_docs.append(image_doc)
+        except Exception as e:
+            print(f"Error processing image {img_index}: {e}")
+            continue
+
+    if data.get("text", "") == "":
+        data["text"] = "Nil"
+
+    text_doc = Document(
+        page_content=data["text"],
+        metadata={
+            "date": str(datetime.datetime.now()),
+            "type": "text",
+            "id": "text"+run_id,
+            "user_id": data["user_id"]
+        }
+    )
+
+    text_embedding = embed_text(text_doc.page_content)
+    all_embeddings.append(text_embedding)
+    all_docs.append(text_doc)
+
+    metadatas = [doc.metadata for doc in all_docs]
+
+    # Store in ChromaDB
+    try:
+        collection.add(
+            ids=[doc.metadata["id"] for doc in all_docs],
+            embeddings=[emb.tolist() for emb in all_embeddings],
+            documents=[doc.page_content for doc in all_docs],
+            metadatas=metadatas
+        )
+        return jsonify({"status": "success", "count": collection.count()})
     except Exception as e:
-        print(f"Error processing image {img_index}: {e}")
-        continue
+        return jsonify({"status": "error", "message": str(e)}), 500
+    
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-if (data["text"] == ""):
-    data["text"] = "Nil"
+def search(query, k=1):
+    """Unified retrieval using CLIP embeddings for both text and images."""
+    # Embed query using CLIP
+    query_embedding = embed_text(query)
+    
+    # Search in unified vector store
+    results_img = collection.query(query_embeddings=[query_embedding], n_results=k, where= {'type':"image"})
+    results_text = collection.query(query_embeddings=[query_embedding], n_results=k, where= {'type':"text"})
+    # print(results)
 
-text_doc = Document(
-    page_content=data["text"],
-    metadata={"date": f'{datetime.datetime.now()}', "type": "text", "user_id": data['user_id']}
+    img_bytes = base64.b64decode(results_img["documents"][0][0][8:])
+    return img_bytes, results_text["documents"]
+
+    
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+client = genai.Client(api_key=GOOGLE_API_KEY)
+
+img_bytes , text = search("red car with four wheels")
+
+def relate(img_bytes, text):
+    response = client.models.generate_content(
+    model="gemini-2.5-flash",   # or gemini-2.5-flash if available
+    contents=[
+        {
+            "role": "user",
+            "parts": [
+                {"text": f"Is this image related to {text}? Answer Yes or No."},
+                {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
+            ]
+        }
+    ]
 )
 
-text_embedding = embed_text(text_doc.page_content)
-all_embeddings.append(text_embedding)
-all_docs.append(text_doc)
+    return response.text
 
-embeddings_array = np.array(all_embeddings)
-
-
-metadatas = [doc.metadata for doc in all_docs]
-
-
-if __name__ == "__main__":
-    collection.add(
-        ids=[doc.metadata["type"] + '_' + f'{random.randint(1, 10000000)}' for doc in all_docs],
-        embeddings=[emb.tolist() for emb in all_embeddings],
-        documents=[doc.page_content for doc in all_docs],
-        metadatas=metadatas
+def llm_answer(prompt):
+    llm = client.models.generate_content(
+    model='gemini-2.5-flash',
+    contents = prompt
     )
-    print(collection.count())
+    return llm.text
 
+def generateMemory(inputs: dict) -> dict:
+    query = inputs["query"]
+    img_bytes, text = search(query)
+    # print(img_bytes)
+    res = relate(img_bytes = img_bytes, text= text)
 
+    memory = {}
+    if res == 'No':
+        memory = {"role": "user",
+            "parts": [
+                {"image": {"mime_type": "image/png", "data": img_bytes}},
+            ]}
+    else:
+        memory = {"role": "user",
+            "parts": [
+                {"text": f"{text}"},
+                {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
+            ]}
+    return {'user_query': query, 'memory':memory}
 
+@app.route("/query-answer", methods = ["GET"])
+def quesry_answer():
+    query = request.get_json()["query"]
+    chain = RunnableLambda(generateMemory) | prompt_template | RunnableLambda(llm_answer)
+
+    result = chain.invoke({
+        "query": f'{query}',
+    })
+    return result
+
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port= 8080, debug= True)
