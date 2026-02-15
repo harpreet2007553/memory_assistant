@@ -22,7 +22,7 @@ load_dotenv()
 ## set up the environment
 os.environ["OPENAI_API_KEY"]=os.getenv("OPENAI_API_KEY")
 
-client = chromadb.PersistentClient(path="chroma_db")
+client = chromadb.PersistentClient(path="./memory_assistant_bot/chroma_db")
 collection = client.get_or_create_collection(
         name="my_collection",
         embedding_function=None,
@@ -179,8 +179,6 @@ def search(query, k=1):
     
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
-
-img_bytes , text = search("red car with four wheels")
 
 def relate(img_bytes, text):
     response = client.models.generate_content(
