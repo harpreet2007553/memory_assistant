@@ -17,13 +17,13 @@ app.use(express.urlencoded({ extended: true, limit: "16kb" }));
 app.use(express.static("public"));
 app.use(cookieParser());
 app.use((err, req, res, next) => {
-//   if (err instanceof ApiError) {
-//     return res.status(err.statusCode).json({
-//       message: err.message,
-//       errors: err.errors,
-//       stack: err.stack, // optional: don't send in production
-//     });
-//   }
+  if (err instanceof ApiError) {
+    return res.status(err.statusCode).json({
+      message: err.message,
+      errors: err.errors,
+      stack: err.stack, // optional: don't send in production
+    });
+  }
 
   // fallback for other errors
   return res.status(500).json({
